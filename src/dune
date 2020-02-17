@@ -1,0 +1,7 @@
+(library
+ (name model_quickcheck)
+ (public_name model_quickcheck)
+ (libraries base base_quickcheck)
+ (preprocess (pps ppx_jane))
+ (inline_tests)
+)

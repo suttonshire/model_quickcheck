@@ -1,0 +1,6 @@
+(library
+ (name examples)
+ (libraries  base_quickcheck base stdio model_quickcheck)
+ (preprocess (pps ppx_jane))
+ (inline_tests)
+)

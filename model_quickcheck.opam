@@ -1,0 +1,14 @@
+opam-version: "2.0"
+name: "model_quickcheck"
+version: "0.0.0.1"
+synopsis: "Model-based testing built on Base_quickcheck"
+maintainer: "Jesse DuMond <suttonshiredev@gmail.com>"
+authors: ["Jesse DuMond <suttonshiredev@gmail.com>"]
+license: "MIT"
+depends: [
+  "ocaml" {>= "4.08.0"} 
+  "base"
+  "base_quickcheck"
+  "dune" {>= "2.0.0"}
+]
+build: ["dune" "build" "-p" name "-j" jobs]
