@@ -1,11 +1,11 @@
 # Model_quickcheck: Model-based testing for imperative OCaml code
 
-Model_quickcheck is useful for automatically generating many tests for stateful OCaml code. With stateful code it is often difficult to tease out which sequence of actions need to be applied to a system to test interesting behavior. Model_quickcheck allow you to think more about the "properties" of the system and takes care of generating the sequences of actions to apply.
+Model_quickcheck is useful for automatically generating many tests for stateful OCaml code. With stateful code it is often difficult to tease out which sequence of actions need to be applied to a system to test interesting behavior. Model_quickcheck allows you to think more about the "properties" of the system and takes care of generating the sequences of actions to apply.
 
 With Model_quickcheck you specify a few main components to setup a test configuration:
 
 1. A unit under test (UUT)
-2. A deterministic model of the system under test
+2. A deterministic model of the unit under test
 3. A set of actions that transition the state of the uut and the model
 4. A set of functions that validate the uut against the model
 
@@ -17,7 +17,7 @@ Model_quickcheck can generate a sequence of actions, applies each to the UUT and
 
 ## Example
 
-Let's take a look at an example that test one of the simplest parts of imperative OCaml, the int ref. Here we model the int ref as a int and specify two actions, `Deref` and `Set`. We're testing the `Deref` action and we want to verify that returned value and the model are equivalent.
+Let's take a look at an example that test one of the simplest parts of imperative OCaml, the int ref. Here we model the int ref as a int and specify two actions, `Deref` and `Set`. We're testing the `Deref` action and we want to verify that the returned value and the model are equivalent.
 
 ```ocaml
 open Base
