@@ -208,8 +208,11 @@ module Setup (Model : Model) (Uut : Uut) = struct
       Or_error.try_with_join ~backtrace:(Backtrace.Exn.am_recording ()) (fun () ->
           let model = Model.create () in
           let uut = Uut.create () in
-          let res = apply_actions_and_test actions model uut in
-          Uut.cleanup uut;
+          let res =
+            Exn.protect
+              ~f:(fun () -> apply_actions_and_test actions model uut)
+              ~finally:(fun () -> Uut.cleanup uut)
+          in
           res)
     in
     Test.with_sample quickcheck_generator ~config ~f:(fun sequence ->
