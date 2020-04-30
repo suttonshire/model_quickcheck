@@ -42,11 +42,22 @@ module type S = sig
 
   val true_precondition : 'a -> 'b -> bool
 
+  module Config : sig
+    type t =
+      { sequence_count : int
+      ; sequence_length : int
+      ; shrink_count : int
+      }
+
+    val default : t
+  end
+
   val check
-    :  (float * (module Action.S)) list
+    :  ?config:Config.t
+    -> (float * (module Action.S)) list
     -> (module Action.S with type arg = 'a and type ret = 'b)
-    -> ('a -> 'b -> model -> unit Base.Or_error.t)
-    -> unit Base.Or_error.t
+    -> ('a -> 'b -> model -> unit Or_error.t)
+    -> unit Or_error.t
 end
 
 module Setup (Model : Model) (Uut : Uut) = struct
@@ -67,6 +78,18 @@ module Setup (Model : Model) (Uut : Uut) = struct
       val update_uut : uut -> arg -> uut * ret
       val precondition : model -> arg -> bool
     end
+  end
+
+  module Config = struct
+    type t =
+      { sequence_count : int
+      ; sequence_length : int
+      ; shrink_count : int
+      }
+
+    let default =
+      { sequence_count = 1024; sequence_length = 1024; shrink_count = 1024 * 1024 }
+    ;;
   end
 
   module Action_instance = struct
@@ -201,8 +224,19 @@ module Setup (Model : Model) (Uut : Uut) = struct
   ;;
 
   let run_sequence actions action prop config =
+    let test_config =
+      { Test.default_config with
+        test_count = config.Config.sequence_count
+      ; shrink_count = config.shrink_count
+      }
+    in
     let quickcheck_generator =
-      Action_seq.generator actions action (Model.create ()) prop ~len:1024
+      Action_seq.generator
+        actions
+        action
+        (Model.create ())
+        prop
+        ~len:config.sequence_length
     in
     let f actions =
       Or_error.try_with_join ~backtrace:(Backtrace.Exn.am_recording ()) (fun () ->
@@ -215,7 +249,7 @@ module Setup (Model : Model) (Uut : Uut) = struct
           in
           res)
     in
-    Test.with_sample quickcheck_generator ~config ~f:(fun sequence ->
+    Test.with_sample quickcheck_generator ~config:test_config ~f:(fun sequence ->
         match
           Sequence.fold_result sequence ~init:() ~f:(fun () input ->
               match f input with
@@ -225,7 +259,7 @@ module Setup (Model : Model) (Uut : Uut) = struct
         | Ok () -> Ok ()
         | Error (input, error) ->
           let shrinker = Action_seq.shrinker in
-          let input, error = shrink_error ~shrinker ~config ~f input error in
+          let input, error = shrink_error ~shrinker ~config:test_config ~f input error in
           Or_error.error_s
             (Sexp.message
                "Model_quickcheck.check: property falsified"
@@ -236,6 +270,7 @@ module Setup (Model : Model) (Uut : Uut) = struct
 
   let check
       (type a b)
+      ?(config = Config.default)
       actions
       (module TestAction : Action.S with type arg = a and type ret = b)
       prop

@@ -3,8 +3,7 @@ module type Model = sig
   type t
 
   (** [create ()] should return a new t. [create ()] is called at a couple points during a
-      test. Rirst before generating a test sequence and again before applying each
-      action in the generated test sequence *)
+      test. First before generating a test sequence and again before each test sequence *)
   val create : unit -> t
 end
 
@@ -17,7 +16,7 @@ module type Uut = sig
   val create : unit -> t
 
   (** [cleanup t] should release any resource held by [t]. [cleanup t] is called after
-      applying each action in a sequence *)
+      applying the actions in a sequence. If an exception is thrown during the application of an action [cleanup t] is called. *)
   val cleanup : t -> unit
 end
 
@@ -43,6 +42,16 @@ module type S = sig
 
   val true_precondition : 'a -> 'b -> bool
 
+  module Config : sig
+    type t =
+      { sequence_count : int
+      ; sequence_length : int
+      ; shrink_count : int
+      }
+
+    val default : t
+  end
+
   (** [check actions test_action property] generates many sequences of actions and checks
       [property] after applying [test_action]. [actions] is a list of (weight,
       action) pairs. The occurence of an action from [actions] is weighted by the weight
@@ -55,7 +64,8 @@ module type S = sig
 
       Weights must be non-negative and must have a strictly positive sum.*)
   val check
-    :  (float * (module Action.S)) list
+    :  ?config:Config.t
+    -> (float * (module Action.S)) list
     -> (module Action.S with type arg = 'a and type ret = 'b)
     -> ('a -> 'b -> model -> unit Base.Or_error.t)
     -> unit Base.Or_error.t
