@@ -47,5 +47,8 @@ let expect action prop =
 
 let%expect_test "ref example" =
   expect (module Deref) (fun () ret model -> ret = model);
-  [%expect {||}]
+  [%expect {|
+    (Error
+     ("Model_quickcheck: property falsified" (sequence ((set 32) (deref ())))
+      (error ""))) |}]
 ;;
