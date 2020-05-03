@@ -52,6 +52,13 @@ module type S = sig
     val default : t
   end
 
+  val check_states
+    :  ?config:Config.t
+    -> (float * (module Action.S)) list
+    -> (module Action.S with type arg = 'a and type ret = 'b)
+    -> ('a -> 'b -> model -> unit Base.Or_error.t)
+    -> (model * uut) Base.Sequence.t Base.Or_error.t
+
   (** [check actions test_action property] generates many sequences of actions and checks
       [property] after applying [test_action]. [actions] is a list of (weight,
       action) pairs. The occurence of an action from [actions] is weighted by the weight

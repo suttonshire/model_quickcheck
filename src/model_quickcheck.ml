@@ -4,7 +4,68 @@ open Base_quickcheck
 module Shrinker = struct
   include Shrinker
 
+  (* Code in this module is taken from Base_quickcheck: https://github.com/janestreet/base_quickcheck/blob/eb18eb2ce357aff9c81f34f60c93086dd139e5c3/src/shrinker.ml#L20 *)
+
   let filter t ~f = create (fun x -> Sequence.filter ~f (shrink t x))
+end
+
+module Test = struct
+  include Test
+
+  (* Code in this module is taken from Base_quickcheck: https://github.com/janestreet/base_quickcheck/blob/f9aed03f0fcfc8c9caf877dc8226ca04ce02eb34/src/test.ml *)
+
+  let lazy_nondeterministic_state = lazy (Random.State.make_self_init ())
+
+  let initial_random_state ~config =
+    match Config.seed config with
+    | Nondeterministic ->
+      Splittable_random.State.create (force lazy_nondeterministic_state)
+    | Deterministic string -> Splittable_random.State.of_int (String.hash string)
+  ;;
+
+  let one_size_per_test ~(config : Config.t) =
+    Sequence.unfold ~init:(config.sizes, 0) ~f:(fun (sizes, number_of_size_values) ->
+        match number_of_size_values >= config.test_count with
+        | true -> None
+        | false ->
+          (match Sequence.next sizes with
+          | Some (size, remaining_sizes) ->
+            Some (size, (remaining_sizes, number_of_size_values + 1))
+          | None ->
+            raise_s
+              [%message
+                "Base_quickcheck.Test.run: insufficient size values for test count"
+                  ~test_count:(config.test_count : int)
+                  (number_of_size_values : int)]))
+  ;;
+
+  let input_sequence ~config ~examples ~generator =
+    let random = initial_random_state ~config in
+    Sequence.append
+      (Sequence.of_list examples)
+      (one_size_per_test ~config
+      |> Sequence.map ~f:(fun size -> Generator.generate generator ~size ~random))
+  ;;
+
+  let shrink_error ~shrinker ~config ~f input error =
+    let rec loop ~shrink_count ~alternates input error =
+      match shrink_count with
+      | 0 -> input, error
+      | _ ->
+        let shrink_count = shrink_count - 1 in
+        (match Sequence.next alternates with
+        | None -> input, error
+        | Some (alternate, alternates) ->
+          (match f alternate with
+          | Ok _ -> loop ~shrink_count ~alternates input error
+          | Error error ->
+            let alternates = Shrinker.shrink shrinker alternate in
+            loop ~shrink_count ~alternates alternate error))
+    in
+    let shrink_count = Test.Config.shrink_count config in
+    let alternates = Shrinker.shrink shrinker input in
+    loop ~shrink_count ~alternates input error
+  ;;
 end
 
 module type Model = sig
@@ -52,6 +113,13 @@ module type S = sig
     val default : t
   end
 
+  val check_states
+    :  ?config:Config.t
+    -> (float * (module Action.S)) list
+    -> (module Action.S with type arg = 'a and type ret = 'b)
+    -> ('a -> 'b -> model -> unit Base.Or_error.t)
+    -> (model * uut) Base.Sequence.t Base.Or_error.t
+
   val check
     :  ?config:Config.t
     -> (float * (module Action.S)) list
@@ -91,6 +159,8 @@ module Setup (Model : Model) (Uut : Uut) = struct
       { sequence_count = 1024; sequence_length = 1024; shrink_count = 1024 * 1024 }
     ;;
   end
+
+  let true_precondition _ _ = true
 
   module Action_instance = struct
     module type S = sig
@@ -192,45 +262,70 @@ module Setup (Model : Model) (Uut : Uut) = struct
 
   let apply_actions_and_test actions model uut =
     let open Or_error.Let_syntax in
-    let%map (_ : model), (_ : uut) =
+    let%map (model' : model), (uut' : uut) =
       List.fold_result actions ~init:(model, uut) ~f:(fun (model, uut) action ->
           let module A = (val action : Action_instance.S) in
           let uut', ret = A.Action.update_uut uut A.arg in
           let%map () = A.property A.arg ret model in
-          let new_model = A.Action.update_model model A.arg in
-          new_model, uut')
+          let model' = A.Action.update_model model A.arg in
+          model', uut')
     in
-    ()
+    model', uut'
   ;;
 
-  let shrink_error ~shrinker ~config ~f input error =
-    let rec loop ~shrink_count ~alternates input error =
-      match shrink_count with
-      | 0 -> input, error
-      | _ ->
-        let shrink_count = shrink_count - 1 in
-        (match Sequence.next alternates with
-        | None -> input, error
-        | Some (alternate, alternates) ->
-          (match f alternate with
-          | Ok () -> loop ~shrink_count ~alternates input error
-          | Error error ->
-            let alternates = Shrinker.shrink shrinker alternate in
-            loop ~shrink_count ~alternates alternate error))
-    in
-    let shrink_count = Test.Config.shrink_count config in
-    let alternates = Shrinker.shrink shrinker input in
-    loop ~shrink_count ~alternates input error
+  let valid_actions actions test_action =
+    let module TestAction = (val test_action : Action.S) in
+    List.find actions ~f:(fun (_, m) ->
+        let module Action = (val m : Action.S) in
+        String.(Action.name = TestAction.name))
+    |> function
+    | None ->
+      let err_s =
+        Printf.sprintf
+          "Model_quickcheck: Action %s is not in the action list"
+          TestAction.name
+      in
+      Or_error.error_string err_s
+    | Some _ ->
+      (match
+         List.find_a_dup
+           ~compare:(fun (_, m0) (_, m1) ->
+             let module Action0 = (val m0 : Action.S) in
+             let module Action1 = (val m1 : Action.S) in
+             String.compare Action0.name Action1.name)
+           actions
+       with
+      | Some (_, m) ->
+        let module Action = (val m : Action.S) in
+        let err_s =
+          Printf.sprintf
+            "Model_quickcheck: Action %s is duplicated in action list"
+            Action.name
+        in
+        Or_error.error_string err_s
+      | None -> Or_error.return actions)
   ;;
 
-  let run_sequence actions action prop config =
+  let run actions =
+    Or_error.try_with_join ~backtrace:(Backtrace.Exn.am_recording ()) (fun () ->
+        let model = Model.create () in
+        let uut = Uut.create () in
+        let res =
+          Exn.protect
+            ~f:(fun () -> apply_actions_and_test actions model uut)
+            ~finally:(fun () -> Uut.cleanup uut)
+        in
+        res)
+  ;;
+
+  let check_states ?(config = Config.default) actions action prop =
     let test_config =
       { Test.default_config with
         test_count = config.Config.sequence_count
       ; shrink_count = config.shrink_count
       }
     in
-    let quickcheck_generator =
+    let generator =
       Action_seq.generator
         actions
         action
@@ -238,35 +333,20 @@ module Setup (Model : Model) (Uut : Uut) = struct
         prop
         ~len:config.sequence_length
     in
-    let f actions =
-      Or_error.try_with_join ~backtrace:(Backtrace.Exn.am_recording ()) (fun () ->
-          let model = Model.create () in
-          let uut = Uut.create () in
-          let res =
-            Exn.protect
-              ~f:(fun () -> apply_actions_and_test actions model uut)
-              ~finally:(fun () -> Uut.cleanup uut)
-          in
-          res)
-    in
-    Test.with_sample quickcheck_generator ~config:test_config ~f:(fun sequence ->
-        match
-          Sequence.fold_result sequence ~init:() ~f:(fun () input ->
-              match f input with
-              | Ok () -> Ok ()
-              | Error error -> Error (input, error))
-        with
-        | Ok () -> Ok ()
-        | Error (input, error) ->
+    let seq = Test.input_sequence ~config:test_config ~generator ~examples:[] in
+    Sequence.fold_result seq ~init:Sequence.empty ~f:(fun res_seq run_seq ->
+        match run run_seq with
+        | Ok res -> Ok (Sequence.append res_seq (Sequence.singleton res))
+        | Error error ->
           let shrinker = Action_seq.shrinker in
-          let input, error = shrink_error ~shrinker ~config:test_config ~f input error in
+          let input, error =
+            Test.shrink_error ~shrinker ~config:test_config ~f:run run_seq error
+          in
           Or_error.error_s
             (Sexp.message
-               "Model_quickcheck.check: property falsified"
+               "Model_quickcheck: property falsified"
                [ "sequence", Action_seq.sexp_of_t input; "error", Error.sexp_of_t error ]))
   ;;
-
-  let true_precondition _ _ = true
 
   let check
       (type a b)
@@ -275,20 +355,9 @@ module Setup (Model : Model) (Uut : Uut) = struct
       (module TestAction : Action.S with type arg = a and type ret = b)
       prop
     =
-    let config =
-      { Test.default_config with test_count = 1024; shrink_count = 1024 * 1024 }
-    in
-    List.find actions ~f:(fun (_, m) ->
-        let module Action = (val m : Action.S) in
-        String.(Action.name = TestAction.name))
-    |> function
-    | None ->
-      let err_s =
-        Printf.sprintf
-          "Model_quickcheck.check: Action %s is not in the action list"
-          TestAction.name
-      in
-      Or_error.error_string err_s
-    | Some _ -> run_sequence actions (module TestAction) prop config
+    let open Or_error.Let_syntax in
+    let%bind actions = valid_actions actions (module TestAction) in
+    let%map _ = check_states ~config actions (module TestAction) prop in
+    ()
   ;;
 end
